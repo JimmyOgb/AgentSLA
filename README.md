@@ -46,10 +46,11 @@ AgentSLA coordinates a 4-stage lifecycle governed by GenLayer's non-deterministi
 3. **Consensus Adjudication (`adjudicate`)**: Any caller triggers adjudication. GenLayer consensus executes:
    - **Leader**: Fetches external evidence, truncates payloads to bound gas, prompts the LLM for a structured JSON verdict (`verdict`, `score`, `summary`).
    - **Validators**: Independently re-fetch evidence from the web, prompt their local LLM, and apply strict comparative equivalence rules.
-4. **On-Chain Settlement**: Once majority consensus agrees:
+4. **On-Chain Settlement & Lifecycle Protection**: Once majority consensus agrees:
    - If verdict is `breached`: Collateral stake is slashed and transferred directly to the claimant.
    - If verdict is `met` or `insufficient_evidence`: Provider stake remains protected.
-   - Claim status transitions to `adjudicated`.
+   - Claim status transitions to `adjudicated`, and the SLA's `pending_claims_count` is decremented.
+   - Only after **all** claims on the SLA are resolved (`pending_claims_count == 0`) may the provider call `close_sla` to withdraw remaining collateral.
 
 ---
 
@@ -112,6 +113,7 @@ The contract state is backed by GenLayer storage collections (`TreeMap`, `u256`)
 | `stake` | `u256` | Native token collateral held in escrow. |
 | `status` | `str` | `"active"` or `"closed"`. |
 | `created_at_block` | `u256` | Block height at SLA registration. |
+| `pending_claims_count` | `u256` | Active unresolved claims against this SLA protecting collateral. |
 
 #### `Claim`
 | Field | Type | Description |
@@ -146,7 +148,8 @@ The contract state is backed by GenLayer storage collections (`TreeMap`, `u256`)
   - Reverts if terms length is less than 20 characters.
 - **`close_sla(sla_id: u256) -> None`**
   - Closes an active SLA and refunds any remaining collateral to the provider.
-  - Reverts if caller is not the SLA provider or if already closed.
+  - Reverts if caller is not the SLA provider, if SLA is not active, or if unresolved claims are pending (`pending_claims_count > 0`).
+  - Guarantees collateral cannot be withdrawn before pending disputes are adjudicated.
 - **`submit_claim(sla_id: u256, evidence_urls: list[str], description: str) -> u256`**
   - Submits a performance claim against an active SLA.
   - Validates URL formats (`http://` or `https://`) and bounds count ($\le 5$).
@@ -238,40 +241,38 @@ AgentSLA is deployed and verified on **GenLayer Testnet Bradbury**:
 
 - **Network**: GenLayer Testnet Bradbury (Chain ID `4221`)
 - **RPC URL**: `https://rpc-bradbury.genlayer.com`
-- **Contract Address**: [`0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee`](https://scan-bradbury.genlayer.com/address/0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee)
+- **Contract Address**: [`0xa36e8fbc78b602722a766dfb69d4857c1670b449`](https://scan-bradbury.genlayer.com/address/0xa36e8fbc78b602722a766dfb69d4857c1670b449)
 - **Deployer Account (`ace-deployer`)**: `0xE4220c4b71877bb94EB173f467ef5c5557017085`
 
 ### Verified On-Chain Transactions
 
 | Operation | Method | Transaction Hash | Consensus Status | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| **Deployment** | `constructor` | `0x1df9694b26bba8539cab8e9b0c9eb5bad327c537bfa466edc38d87147f5020ff` | `FINALIZED` (Status 7) | `FINISHED_WITH_RETURN` |
-| **Write Call** | `create_sla` | `0x71d0a4badaefe372236d55709e56071b239d3383b35f8becffa3f4e3f0448695` | `FINALIZED` | SLA #1 created |
-| **Write Call** | `submit_claim` | `0xbf254632b952e1361debeb9ae083c8ee2ebf50530875fbd036669c094725d36a` | `FINALIZED` | Claim #1 registered |
-| **Consensus Adjudication** | `adjudicate` | `0xcdfbd6d1ecf3bf908aafd4b573919da12de398d7d839d863d06c59a7eefe49db` | Mined & Processed | Web + LLM Consensus |
+| **Deployment (v2)** | `constructor` | `0x901f2c16ccfc6351869cdb1f6d60a9c58f327eab554bdf935e630919cdd0beee` | `FINALIZED` | `SUCCESS` |
+| **Deployment (v1)** | `constructor` | `0x1df9694b26bba8539cab8e9b0c9eb5bad327c537bfa466edc38d87147f5020ff` | `FINALIZED` | `FINISHED_WITH_RETURN` |
 
 ### Verified CLI Queries
 
 ```bash
 # Retrieve Contract Schema
-genlayer schema 0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee
+genlayer schema 0xa36e8fbc78b602722a766dfb69d4857c1670b449
 
 # Query Aggregate Stats
-genlayer call 0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee get_stats
+genlayer call 0xa36e8fbc78b602722a766dfb69d4857c1670b449 get_stats
 # Output:
 # {
-#   total_active_slas: 1,
+#   total_active_slas: 0,
 #   total_adjudicated_claims: 0,
-#   total_claims: 1,
-#   total_pending_claims: 1,
-#   total_slas: 1
+#   total_claims: 0,
+#   total_pending_claims: 0,
+#   total_slas: 0
 # }
 
 # Query Active SLAs
-genlayer call 0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee get_active_slas
+genlayer call 0xa36e8fbc78b602722a766dfb69d4857c1670b449 get_active_slas
 
 # Query Pending Claims
-genlayer call 0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee get_pending_claims
+genlayer call 0xa36e8fbc78b602722a766dfb69d4857c1670b449 get_pending_claims
 ```
 
 ---

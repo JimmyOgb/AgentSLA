@@ -23,6 +23,7 @@ class SLA:
     stake: u256
     status: str
     created_at_block: u256
+    pending_claims_count: u256
 
 
 @allow_storage
@@ -70,6 +71,7 @@ class AgentSLA(gl.Contract):
             stake=gl.message.value,
             status="active",
             created_at_block=u256(0),
+            pending_claims_count=u256(0),
         )
         self.total_active_slas = self.total_active_slas + u256(1)
         return sla_id
@@ -83,6 +85,12 @@ class AgentSLA(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Only provider can close SLA")
         if sla.status != "active":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} SLA is not active")
+        # Lifecycle protection: Collateral / stake cannot be reclaimed while
+        # any claim against this SLA is still pending resolution.
+        if sla.pending_claims_count > u256(0):
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} Cannot close SLA with pending claims: {sla.pending_claims_count} unresolved claim(s)"
+            )
 
         sla.status = "closed"
         refund = sla.stake
@@ -91,7 +99,7 @@ class AgentSLA(gl.Contract):
         if self.total_active_slas > u256(0):
             self.total_active_slas = self.total_active_slas - u256(1)
         if refund > u256(0):
-            gl.chain.Account(gl.message.sender_address).emit_transfer(refund)
+            gl.get_contract_at(gl.message.sender_address).emit_transfer(value=refund)
 
     @gl.public.write
     def submit_claim(
@@ -134,6 +142,12 @@ class AgentSLA(gl.Contract):
             adjudicated_by=Address("0x0000000000000000000000000000000000000000"),
         )
         self.total_pending_claims = self.total_pending_claims + u256(1)
+
+        # Track unresolved claim on this SLA to protect collateral from premature withdrawal
+        sla = self.slas[sla_id]
+        sla.pending_claims_count = sla.pending_claims_count + u256(1)
+        self.slas[sla_id] = sla
+
         return claim_id
 
     @gl.public.write
@@ -221,16 +235,22 @@ Respond ONLY with JSON: {{"verdict": "met"|"breached"|"insufficient_evidence", "
             self.total_pending_claims = self.total_pending_claims - u256(1)
         self.total_adjudicated_claims = self.total_adjudicated_claims + u256(1)
 
+        # Decrement pending claims count on the SLA upon resolution
+        if sla.pending_claims_count > u256(0):
+            sla.pending_claims_count = sla.pending_claims_count - u256(1)
+
         payout_recipient: Address | None = None
         payout_amount = u256(0)
         if final_verdict == "breached" and sla.stake > u256(0):
             payout_recipient = claim.claimant
             payout_amount = sla.stake
             sla.stake = u256(0)
-            self.slas[sla_id] = sla
+
+        # Persist updated SLA state (decremented pending_claims_count and slashed stake if breached)
+        self.slas[sla_id] = sla
 
         if payout_recipient is not None and payout_amount > u256(0):
-            gl.chain.Account(payout_recipient).emit_transfer(payout_amount)
+            gl.get_contract_at(payout_recipient).emit_transfer(value=payout_amount)
 
         return {
             "claim_id": int(claim_id),
@@ -262,6 +282,7 @@ Respond ONLY with JSON: {{"verdict": "met"|"breached"|"insufficient_evidence", "
             "stake": int(sla.stake),
             "status": sla.status,
             "created_at_block": int(sla.created_at_block),
+            "pending_claims_count": int(sla.pending_claims_count),
         }
 
     @gl.public.view
@@ -327,6 +348,7 @@ Respond ONLY with JSON: {{"verdict": "met"|"breached"|"insufficient_evidence", "
                         "terms": s.terms,
                         "stake": int(s.stake),
                         "status": s.status,
+                        "pending_claims_count": int(s.pending_claims_count),
                     }
                 )
             curr = curr + u256(1)

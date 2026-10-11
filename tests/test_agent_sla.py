@@ -287,3 +287,138 @@ def test_equivalence_principle_rules(direct_vm, direct_deploy, direct_alice):
         "summary": "Bad",
     }
     assert contract.validate_equivalence(leader_valid, validator_short_summary) is False
+
+
+def test_cannot_close_sla_with_pending_claim_and_breach_settlement(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """
+    Test lifecycle and collateral protection:
+    1. Provider creates SLA with collateral stake.
+    2. Claimant submits a claim against it (pending_claims_count -> 1).
+    3. Provider attempts to close SLA / withdraw collateral -> must revert and be blocked.
+    4. Adjudicate the claim as breached -> collateral is paid out, pending_claims_count -> 0.
+    5. Then (and only then) allow provider to close SLA and handle remaining balance.
+    """
+    contract = direct_deploy("contracts/agent_sla.py")
+
+    # Step 1: Alice creates SLA with collateral stake
+    direct_vm.sender = direct_alice
+    direct_vm.value = 1000000000000000000  # 1 ETH collateral
+    sla_id = contract.create_sla("Guaranteed uptime >= 99.9% over rolling 30 days with full collateral backed.")
+    direct_vm.value = 0
+
+    sla_before = contract.get_sla(sla_id)
+    assert sla_before["stake"] == 1000000000000000000
+    assert sla_before["pending_claims_count"] == 0
+    assert sla_before["status"] == "active"
+
+    # Step 2: Bob submits a claim against it
+    direct_vm.sender = direct_bob
+    evidence_url = "https://status.agent.network/incidents/outage-report"
+    claim_id = contract.submit_claim(
+        sla_id,
+        [evidence_url],
+        "Provider suffered an 18-hour outage causing severe SLA breach."
+    )
+
+    sla_with_claim = contract.get_sla(sla_id)
+    assert sla_with_claim["pending_claims_count"] == 1
+
+    # Step 3: Alice attempts to close / withdraw -> must revert / be blocked!
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Cannot close SLA with pending claims"):
+        contract.close_sla(sla_id)
+
+    # Confirm SLA remains active and stake is fully preserved
+    sla_still_active = contract.get_sla(sla_id)
+    assert sla_still_active["status"] == "active"
+    assert sla_still_active["stake"] == 1000000000000000000
+
+    # Step 4: Adjudicate the claim as breached
+    direct_vm.mock_web(
+        r".*status\.agent\.network/incidents/outage-report.*",
+        {
+            "status": 200,
+            "body": "Official Incident Summary: Outage confirmed for 18 hours. Availability 97.5%."
+        }
+    )
+    direct_vm.mock_llm(
+        r".*Service Level Agreement.*",
+        json.dumps({
+            "verdict": "breached",
+            "score": 96,
+            "summary": "18 hours of downtime violated the guaranteed 99.9% uptime threshold."
+        })
+    )
+
+    result = contract.adjudicate(claim_id)
+    assert result["verdict"] == "breached"
+    assert result["settled_payout"] == 1000000000000000000
+
+    claim = contract.get_claim(claim_id)
+    assert claim["status"] == "adjudicated"
+    assert claim["verdict"] == "breached"
+
+    # Pending count is now 0, stake slashed to 0
+    sla_adjudicated = contract.get_sla(sla_id)
+    assert sla_adjudicated["pending_claims_count"] == 0
+    assert sla_adjudicated["stake"] == 0
+
+    # Step 5: Then (and only then) allow provider to close SLA
+    direct_vm.sender = direct_alice
+    contract.close_sla(sla_id)
+
+    sla_final = contract.get_sla(sla_id)
+    assert sla_final["status"] == "closed"
+    assert sla_final["stake"] == 0
+
+
+def test_collateral_protection_resolved_met_and_withdrawn(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """
+    Test lifecycle protection when claim verdict is 'met':
+    - Provider is blocked while claim is pending.
+    - After resolution as 'met', collateral is preserved.
+    - Provider can close SLA and reclaim full collateral.
+    """
+    contract = direct_deploy("contracts/agent_sla.py")
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 5000000
+    sla_id = contract.create_sla("Latency guarantee: p95 latency must be strictly under 200ms.")
+    direct_vm.value = 0
+
+    direct_vm.sender = direct_bob
+    evidence_url = "https://metrics.agent.network/p95-report"
+    claim_id = contract.submit_claim(sla_id, [evidence_url], "Verify latency compliance.")
+
+    # Alice blocked from premature closing/withdrawal
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Cannot close SLA with pending claims"):
+        contract.close_sla(sla_id)
+
+    # Adjudicate as met
+    direct_vm.mock_web(
+        r".*metrics\.agent\.network/p95-report.*",
+        {"status": 200, "body": "Observed P95 latency: 120ms across all requests."}
+    )
+    direct_vm.mock_llm(
+        r".*Service Level Agreement.*",
+        json.dumps({
+            "verdict": "met",
+            "score": 90,
+            "summary": "120ms latency satisfies the 200ms requirement."
+        })
+    )
+
+    contract.adjudicate(claim_id)
+
+    # Pending claims is 0, stake intact
+    sla = contract.get_sla(sla_id)
+    assert sla["pending_claims_count"] == 0
+    assert sla["stake"] == 5000000
+
+    # Alice can close and reclaim stake
+    contract.close_sla(sla_id)
+    sla_closed = contract.get_sla(sla_id)
+    assert sla_closed["status"] == "closed"
+    assert sla_closed["stake"] == 0
+

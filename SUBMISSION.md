@@ -21,12 +21,13 @@ AgentSLA demonstrates production-grade GenLayer consensus patterns:
    - **Exact verdict match** (`met`, `breached`, `insufficient_evidence`).
    - **Confidence score tolerance** ($\pm 15$ points).
    - **Substantive explanation** ($\ge 10$ characters).
-5. **Checks-Effects-Interactions**: All storage modifications occur after consensus succeeds, before any stake payouts.
+5. **Checks-Effects-Interactions & Lifecycle Protection**: All storage modifications occur after consensus succeeds, before any stake payouts. Collateral is strictly locked and cannot be withdrawn or closed via `close_sla` while any claims remain pending (`pending_claims_count > 0`), preventing premature collateral drains before breach adjudication.
 
 ---
 
 ## Why It Is Strong / Not a Demo
 - **True Infrastructure Primitive**: Designed as a generic layer that autonomous agent marketplaces, freelance agent pools, or DeFi agent protocols can integrate.
+- **Collateral Lifecycle Integrity**: Fully guards against frontrunning and premature withdrawals by tracking unresolved claims per SLA, guaranteeing collateral is preserved until all claims are settled.
 - **Robust Equivalence Principle**: Does not rubber-stamp the leader. Enforces independent evaluation with discrete verdict matching and bounded numerical tolerance.
 - **Production Safety Standards**: Pinned GenVM runner hash (`py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`), validated with `genvm-lint`, zero storage writes inside non-deterministic blocks, and complete test suite passing in direct mode.
 
@@ -35,12 +36,10 @@ AgentSLA demonstrates production-grade GenLayer consensus patterns:
 ## On-Chain Deployment & Verification
 - **Network**: GenLayer Testnet Bradbury (Chain ID `4221`)
 - **RPC URL**: `https://rpc-bradbury.genlayer.com`
-- **Contract Address**: [`0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee`](https://scan-bradbury.genlayer.com/address/0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee)
+- **Contract Address**: [`0xa36e8fbc78b602722a766dfb69d4857c1670b449`](https://scan-bradbury.genlayer.com/address/0xa36e8fbc78b602722a766dfb69d4857c1670b449)
 - **Deployer (`ace-deployer`)**: `0xE4220c4b71877bb94EB173f467ef5c5557017085`
-- **Deployment Transaction Hash**: `0x1df9694b26bba8539cab8e9b0c9eb5bad327c537bfa466edc38d87147f5020ff` (Status: `FINALIZED`, Result: `FINISHED_WITH_RETURN`)
-- **Write Interaction - `create_sla`**: `0x71d0a4badaefe372236d55709e56071b239d3383b35f8becffa3f4e3f0448695`
-- **Write Interaction - `submit_claim`**: `0xbf254632b952e1361debeb9ae083c8ee2ebf50530875fbd036669c094725d36a`
-- **Write Interaction - `adjudicate`**: `0xcdfbd6d1ecf3bf908aafd4b573919da12de398d7d839d863d06c59a7eefe49db`
+- **Deployment Transaction Hash**: `0x901f2c16ccfc6351869cdb1f6d60a9c58f327eab554bdf935e630919cdd0beee` (Status: `FINALIZED`, Result: `SUCCESS`)
+- **Initial Deployment (v1)**: `0xB0fe13b5A5FEa9b39D217184606430d8d9bB11ee` (Tx: `0x1df9694b26bba8539cab8e9b0c9eb5bad327c537bfa466edc38d87147f5020ff`)
 
 ---
 
